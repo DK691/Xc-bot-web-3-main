@@ -229,13 +229,7 @@ function handleChatInput() {
         val = parseInt(valStr, 10);
         if (isNaN(val)) val = valStr;
     }
-    
-    const validCommands = ['forward', 'reverse', 'left', 'right', 'stop', 'pan', 'tilt'];
-    if (validCommands.includes(cmd)) {
         sendCommand(cmd, val);
-    } else {
-        appendMessage('System', `Unknown command: ${cmd}. Valid commands: ${validCommands.join(', ')}`);
-    }
 
     messageInput.value = '';
 }
