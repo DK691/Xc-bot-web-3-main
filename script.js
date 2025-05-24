@@ -6,6 +6,8 @@ const chatMessages = document.getElementById('chat-messages');
 const sendBtn = document.getElementById('send-btn');
 const messageInput = document.getElementById('message-input');
 const videoStream = document.getElementById('videoStream');
+const speedSlider = document.getElementById('speed-slider');
+const speedValue = document.getElementById('speed-value');
 
 // Connection status
 const connectionDot = document.getElementById('connection-dot');
@@ -14,6 +16,9 @@ const darkModeToggle = document.getElementById('dark-mode-toggle');
 
 // Track pressed keys to prevent key repeat
 const pressedKeys = new Set();
+// Track current global speed
+let currentGlobalSpeed = 50; // Default speed matching slider
+let lastSentSpeed = 50; // Track the last speed actually sent to prevent duplicates
 
 // On open
 ws.addEventListener('open', () => {
@@ -37,13 +42,38 @@ ws.addEventListener('error', (error) => {
     if (connectionText) connectionText.textContent = 'Error';
 });
 
-// *** NEW: Handle incoming messages from backend/ESP32 ***
+// *** FIXED: Single message handler for all WebSocket messages ***
 ws.addEventListener('message', (event) => {
-    try {
-        const data = JSON.parse(event.data);
-        appendMessage('Robot', JSON.stringify(data));
-    } catch {
-        appendMessage('Robot', event.data);
+    if (event.data instanceof ArrayBuffer) {
+        // Process binary audio data
+        audioStream.processChunk(event.data);
+    } else if (typeof event.data === 'string') {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'audio_metadata') {
+                console.log(`[Audio] Metadata: ${JSON.stringify(data)}`);
+            } else if (data.type === 'audio_control') {
+                // Handle control messages
+                if (data.status === 'audio_started') {
+                    console.log("[Audio] Server confirmed audio streaming started");
+                    // Initialize audio context here if not already done
+                    if (!audioStream.context) {
+                        document.body.addEventListener('click', () => {
+                            audioStream.context = new (window.AudioContext || window.webkitAudioContext)();
+                            console.log("[Audio] Context initialized after server confirmation");
+                        }, { once: true });
+                        alert("Click anywhere to enable audio playback");
+                    }
+                } else if (data.status === 'audio_stopped') {
+                    console.log("[Audio] Server confirmed audio streaming stopped");
+                }
+            } else {
+                // Handle regular messages
+                appendMessage('Robot', JSON.stringify(data));
+            }
+        } catch {
+            appendMessage('Robot', event.data);
+        }
     }
 });
 
@@ -75,13 +105,20 @@ function sendCommand(command, value = null) {
         payload.cmd = "motor";
         // ESP32 expects 'backward' instead of 'reverse'
         payload.action = (command === 'reverse') ? 'backward' : command;
-        // optionally send speeds if you want, else defaults on ESP32 will be used
-        // payload.speedL = 100;
-        // payload.speedR = 100;
+        // Always include current speed for convenience/visibility in JSON
+        payload.speed = currentGlobalSpeed;
     } else if (['pan', 'tilt'].includes(command)) {
         payload.cmd = "servo";
         payload.axis = command;
         if (value !== null) payload.angle = value;
+    } else if (command === 'speed') {
+        // Handle explicit speed commands
+        payload.cmd = command;
+        if (value !== null) {
+            payload.value = value;
+            lastSentSpeed = value;
+            currentGlobalSpeed = value;
+        }
     } else {
         payload.cmd = command;
         if (value !== null) payload.value = value;
@@ -107,6 +144,27 @@ function sendPanTiltCommand(axis, angle) {
     appendMessage('You', `${axis}: ${angle}°`);
 }
 
+// FIXED: Separate speed command function to avoid confusion
+function sendSpeedCommand(speed) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        appendMessage('System', 'Cannot send speed: Not connected to server.');
+        return;
+    }
+    
+    // Only send if speed actually changed
+    if (speed !== lastSentSpeed) {
+        const payload = {
+            cmd: "speed",
+            value: speed
+        };
+        
+        ws.send(JSON.stringify(payload));
+        appendMessage('You', `Speed: ${speed}%`);
+        lastSentSpeed = speed;
+        currentGlobalSpeed = speed;
+    }
+}
+
 // Button click events
 document.querySelectorAll('[data-command]').forEach(button => {
     button.addEventListener('click', () => {
@@ -119,7 +177,7 @@ document.querySelectorAll('[data-command]').forEach(button => {
 const keyMap = {
     'w': 'forward',
     'a': 'left',
-    's': 'reverse',
+    's': 'reverse',  
     'd': 'right',
     'i': 'tilt',      // Tilt up
     'j': 'pan',       // Pan left
@@ -229,8 +287,8 @@ function handleChatInput() {
         val = parseInt(valStr, 10);
         if (isNaN(val)) val = valStr;
     }
-        sendCommand(cmd, val);
-
+    
+    sendCommand(cmd, val);
     messageInput.value = '';
 }
 
@@ -242,44 +300,177 @@ if (darkModeToggle) {
 
         if (currentTheme === 'dark') {
             document.documentElement.setAttribute('data-theme', 'light');
-            localStorage.setItem('theme', 'light');
             if (icon) icon.classList.replace('fa-sun', 'fa-moon');
         } else {
             document.documentElement.setAttribute('data-theme', 'dark');
-            localStorage.setItem('theme', 'dark');
             if (icon) icon.classList.replace('fa-moon', 'fa-sun');
         }
     });
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-    // Theme persistence
-    const savedTheme = localStorage.getItem('theme') || 'light';
-    document.documentElement.setAttribute('data-theme', savedTheme);
+    // Set default theme
+    document.documentElement.setAttribute('data-theme', 'dark');
     if (darkModeToggle) {
         const icon = darkModeToggle.querySelector('i');
         if (icon) {
-            if (savedTheme === 'dark') {
-                icon.classList.remove('fa-moon');
-                icon.classList.add('fa-sun');
-            } else {
-                icon.classList.remove('fa-sun');
-                icon.classList.add('fa-moon');
-            }
+            icon.classList.remove('fa-sun');
+            icon.classList.add('fa-moon');
         }
     }
+    
+    // FIXED: Speed Slider Functionality - sends while dragging but prevents motor command conflicts
+    const speedSlider = document.getElementById('speed-slider');
+    const speedValue = document.getElementById('speed-value');
 
-    // Load MJPG stream from ESP32-CAM
+    // Track if speed is being actively adjusted
+    let isSpeedAdjusting = false;
+    let speedTimeout = null;
+
+    // Update speed value display when slider changes
+    speedSlider.addEventListener('input', function() {
+        const speed = parseInt(this.value);
+        speedValue.textContent = `${speed}%`;
+        currentGlobalSpeed = speed; // Update the global speed for future motor commands
+        
+        // Send speed command immediately while dragging (with light debouncing)
+        if (isSpeedAdjusting) {
+            // Clear any existing timeout
+            if (speedTimeout) {
+                clearTimeout(speedTimeout);
+            }
+            
+            // Send with minimal delay to prevent flooding but maintain responsiveness
+            speedTimeout = setTimeout(() => {
+                sendSpeedCommand(speed);
+            }, 50); // Reduced debounce for more responsive dragging
+        }
+    });
+
+    // Mouse/Touch events for speed adjustment
+    speedSlider.addEventListener('mousedown', function() {
+        isSpeedAdjusting = true;
+        // Send immediate speed command when starting to drag
+        sendSpeedCommand(parseInt(this.value));
+    });
+
+    speedSlider.addEventListener('touchstart', function() {
+        isSpeedAdjusting = true;
+        // Send immediate speed command when starting to drag
+        sendSpeedCommand(parseInt(this.value));
+    });
+
+    speedSlider.addEventListener('mouseup', function() {
+        isSpeedAdjusting = false;
+        // Send final speed command
+        sendSpeedCommand(parseInt(this.value));
+    });
+
+    speedSlider.addEventListener('touchend', function() {
+        isSpeedAdjusting = false;
+        // Send final speed command
+        sendSpeedCommand(parseInt(this.value));
+    });
+
+    // Keyboard controls for fine adjustment
+    speedSlider.addEventListener('keydown', function(e) {
+        e.preventDefault();
+        
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+            this.value = Math.max(0, parseInt(this.value) - 1);
+        } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+            this.value = Math.min(100, parseInt(this.value) + 1);
+        }
+        
+        speedValue.textContent = `${this.value}%`;
+        currentGlobalSpeed = parseInt(this.value);
+        sendSpeedCommand(currentGlobalSpeed);
+    });
+
+    // Video stream setup
     if (videoStream) {
-        videoStream.src = "http://192.168.15.146/stream";
+        videoStream.src = "/video/"; // This uses your server's proxy route
         
         videoStream.onerror = function() {
-            console.error('Error loading video stream');
-            appendMessage('System', 'Failed to load video feed. Check ESP32-CAM connection.');
+            console.error('Error loading video stream via proxy');
+            appendMessage('System', 'Failed to load video feed via proxy. Trying direct connection...');
+            
+            // Fallback to direct ESP32-CAM connection
+            videoStream.src = "http://YOUR_ESP32_CAM_IP_HERE/stream";
         };
         
         videoStream.onload = function() {
             console.log('Video stream loaded successfully');
+            appendMessage('System', 'Video feed connected successfully.');
         };
     }
 });
+
+// Audio streaming functionality
+const audioStream = {
+  active: false,
+  context: null,
+  sampleRate: 8000, // Ensure this matches ESP32's sample rate
+  
+  start: function() {
+    if (!this.active) {
+      console.log("[Audio] Sending start command to server...");
+      ws.send(JSON.stringify({ 
+        cmd: 'start_audio',
+        timestamp: Date.now()
+      }));
+      this.active = true;
+    }
+  },
+
+  stop: function() {
+    if (this.active) {
+      ws.send(JSON.stringify({ cmd: 'stop_audio' }));
+      this.active = false;
+      if (this.context) {
+        this.context.close().then(() => {
+          this.context = null;
+          console.log("[Audio] Context closed. Streaming stopped.");
+        });
+      }
+    }
+  },
+
+  processChunk: function(audioData) {
+    if (!this.active || !this.context) {
+      console.log("[Audio] Received data but no context - queuing or ignoring");
+      return;
+    }
+
+    try {
+      const intArray = new Int16Array(audioData);
+      const floatArray = new Float32Array(intArray.length);
+      
+      for (let i = 0; i < intArray.length; i++) {
+        floatArray[i] = intArray[i] / 32768.0; // Normalize to [-1, 1]
+      }
+
+      const buffer = this.context.createBuffer(1, floatArray.length, this.sampleRate);
+      buffer.getChannelData(0).set(floatArray);
+      
+      const source = this.context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.context.destination);
+      source.start(this.context.currentTime);
+      
+      console.log(`[Audio] Played chunk (${audioData.byteLength} bytes)`);
+    } catch (error) {
+      console.error("[Audio] Error processing chunk:", error);
+    }
+  }
+};
+
+// Console interface
+window.start_audio = () => audioStream.start();
+window.stop_audio = () => audioStream.stop();
+
+console.log("------------------------------------------");
+console.log("Audio Control Commands:");
+console.log("start_audio() - Start audio streaming");
+console.log("stop_audio()  - Stop audio streaming");
+console.log("------------------------------------------");
