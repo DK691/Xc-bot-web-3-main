@@ -58,7 +58,7 @@ wss.on('connection', (socket, req) => {
 
         // Broadcast with metadata
         const metadata = JSON.stringify({
-          type: 'audio',
+          type: 'audio_metadata',
           timestamp: now,
           size: message.length,
           seq: audioSequence++
@@ -87,26 +87,27 @@ wss.on('connection', (socket, req) => {
         data = JSON.parse(message.toString());
         console.log(`📨 Received from client ${clientIP}:`, data);
         
-        if (data.command === 'start_audio' || data.cmd === 'start_audio') {
-  audioStreamActive = true;
-  console.log(`🎤 Audio streaming enabled for ${clientIP}`);
-  // Send confirmation with proper type
-  socket.send(JSON.stringify({ 
-    type: 'audio_control',
-    status: 'audio_started',
-    timestamp: Date.now()
-  }));
-} else if (data.command === 'stop_audio' || data.cmd === 'stop_audio') {
-  audioStreamActive = false;
-  console.log(`🔇 Audio streaming disabled for ${clientIP}`);
-  socket.send(JSON.stringify({ 
-    type: 'audio_control',
-    status: 'audio_stopped',
-    timestamp: Date.now()
-  }));
-}
+        // FIXED: Correct audio control logic
+        if (data.cmd === 'start_audio') {
+          audioStreamActive = true;
+          console.log(`🎤 Audio streaming enabled for ${clientIP}`);
+          // Send confirmation with proper type
+          socket.send(JSON.stringify({ 
+            type: 'audio_control',
+            status: 'audio_started',
+            timestamp: Date.now()
+          }));
+        } else if (data.cmd === 'stop_audio') {
+          audioStreamActive = false;
+          console.log(`🔇 Audio streaming disabled for ${clientIP}`);
+          socket.send(JSON.stringify({ 
+            type: 'audio_control',
+            status: 'audio_stopped',
+            timestamp: Date.now()
+          }));
+        }
 
-        // Broadcast JSON messages to other clients
+        // Broadcast JSON messages to other clients (including ESP32)
         wss.clients.forEach(client => {
           if (client !== socket && client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify(data));
@@ -150,6 +151,7 @@ app.get('/video/', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
+    res.setHeader('Access-Control-Allow-Origin', '*');
     
     // Pipe the ESP32 stream to the client
     response.data.pipe(res);

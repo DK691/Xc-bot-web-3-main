@@ -1,5 +1,5 @@
 // Connect to WebSocket server running on local machine
-const ws = new WebSocket("ws://localhost:3000"); // Changed to localhost since your server runs on same machine
+const ws = new WebSocket("ws://localhost:3000");
 
 // DOM Elements
 const chatMessages = document.getElementById('chat-messages');
@@ -42,40 +42,54 @@ ws.addEventListener('error', (error) => {
     if (connectionText) connectionText.textContent = 'Error';
 });
 
-// *** FIXED: Single message handler for all WebSocket messages ***
+// Single, comprehensive message handler
 ws.addEventListener('message', (event) => {
     if (event.data instanceof ArrayBuffer) {
-        // Process binary audio data
+        // Route binary data to audio processor
         audioStream.processChunk(event.data);
     } else if (typeof event.data === 'string') {
+        // Route text data based on content
         try {
             const data = JSON.parse(event.data);
-            if (data.type === 'audio_metadata') {
-                console.log(`[Audio] Metadata: ${JSON.stringify(data)}`);
-            } else if (data.type === 'audio_control') {
-                // Handle control messages
-                if (data.status === 'audio_started') {
-                    console.log("[Audio] Server confirmed audio streaming started");
-                    // Initialize audio context here if not already done
-                    if (!audioStream.context) {
-                        document.body.addEventListener('click', () => {
-                            audioStream.context = new (window.AudioContext || window.webkitAudioContext)();
-                            console.log("[Audio] Context initialized after server confirmation");
-                        }, { once: true });
-                        alert("Click anywhere to enable audio playback");
-                    }
-                } else if (data.status === 'audio_stopped') {
-                    console.log("[Audio] Server confirmed audio streaming stopped");
-                }
+            // Route based on message type
+            if (data.type === 'audio_control') {
+                handleAudioControl(data);
+            } else if (data.type === 'audio_metadata') {
+                handleAudioMetadata(data);
             } else {
-                // Handle regular messages
-                appendMessage('Robot', JSON.stringify(data));
+                handleRobotMessage(data);
             }
         } catch {
-            appendMessage('Robot', event.data);
+            handleRawTextMessage(event.data);
         }
     }
 });
+
+// FIXED: Audio control handler
+function handleAudioControl(data) {
+    console.log('[Audio Control]', data);
+    if (data.status === 'audio_started') {
+        appendMessage('System', 'Audio streaming started');
+        audioStream.initializeContext();
+    } else if (data.status === 'audio_stopped') {
+        appendMessage('System', 'Audio streaming stopped');
+    }
+}
+
+// FIXED: Audio metadata handler
+function handleAudioMetadata(data) {
+    console.log(`[Audio Metadata] Seq: ${data.seq}, Size: ${data.size} bytes`);
+}
+
+// Robot message handler
+function handleRobotMessage(data) {
+    appendMessage('Robot', JSON.stringify(data));
+}
+
+// Raw text message handler
+function handleRawTextMessage(message) {
+    appendMessage('Server', message);
+}
 
 function appendMessage(sender, text) {
     if (!chatMessages) {
@@ -323,52 +337,51 @@ window.addEventListener('DOMContentLoaded', () => {
     const speedSlider = document.getElementById('speed-slider');
     const speedValue = document.getElementById('speed-value');
 
-    // Track if speed is being actively adjusted
-    let isSpeedAdjusting = false;
+    // Track timeout for speed command debouncing
     let speedTimeout = null;
 
-    // Update speed value display when slider changes
+    // Update speed value display when slider changes - ALWAYS send command
     speedSlider.addEventListener('input', function() {
         const speed = parseInt(this.value);
         speedValue.textContent = `${speed}%`;
         currentGlobalSpeed = speed; // Update the global speed for future motor commands
         
-        // Send speed command immediately while dragging (with light debouncing)
-        if (isSpeedAdjusting) {
-            // Clear any existing timeout
-            if (speedTimeout) {
-                clearTimeout(speedTimeout);
-            }
-            
-            // Send with minimal delay to prevent flooding but maintain responsiveness
-            speedTimeout = setTimeout(() => {
-                sendSpeedCommand(speed);
-            }, 50); // Reduced debounce for more responsive dragging
+        // Clear any existing timeout to prevent command spam
+        if (speedTimeout) {
+            clearTimeout(speedTimeout);
         }
+        
+        // Send speed command with minimal debouncing for responsive dragging
+        speedTimeout = setTimeout(() => {
+            sendSpeedCommand(speed);
+        }, 25); // Very short delay for real-time feel
     });
 
-    // Mouse/Touch events for speed adjustment
+    // Mouse/Touch events for speed adjustment - removed the isSpeedAdjusting logic
     speedSlider.addEventListener('mousedown', function() {
-        isSpeedAdjusting = true;
         // Send immediate speed command when starting to drag
         sendSpeedCommand(parseInt(this.value));
     });
 
     speedSlider.addEventListener('touchstart', function() {
-        isSpeedAdjusting = true;
         // Send immediate speed command when starting to drag
         sendSpeedCommand(parseInt(this.value));
     });
 
+    // Optional: Final command on release (can remove if not needed)
     speedSlider.addEventListener('mouseup', function() {
-        isSpeedAdjusting = false;
-        // Send final speed command
+        // Clear any pending timeout and send final command
+        if (speedTimeout) {
+            clearTimeout(speedTimeout);
+        }
         sendSpeedCommand(parseInt(this.value));
     });
 
     speedSlider.addEventListener('touchend', function() {
-        isSpeedAdjusting = false;
-        // Send final speed command
+        // Clear any pending timeout and send final command
+        if (speedTimeout) {
+            clearTimeout(speedTimeout);
+        }
         sendSpeedCommand(parseInt(this.value));
     });
 
@@ -393,24 +406,46 @@ window.addEventListener('DOMContentLoaded', () => {
         
         videoStream.onerror = function() {
             console.error('Error loading video stream via proxy');
-            appendMessage('System', 'Failed to load video feed via proxy. Trying direct connection...');
-            
-            // Fallback to direct ESP32-CAM connection
-            videoStream.src = "http://YOUR_ESP32_CAM_IP_HERE/stream";
+            appendMessage('System', 'Failed to load video feed via proxy. Check ESP32-CAM IP configuration.');
         };
         
-        videoStream.onload = function() {
+        videoStream.onloadstart = function() {
+            console.log('Video stream started loading...');
+            appendMessage('System', 'Connecting to video feed...');
+        };
+
+        videoStream.onloadeddata = function() {
             console.log('Video stream loaded successfully');
             appendMessage('System', 'Video feed connected successfully.');
         };
     }
 });
 
-// Audio streaming functionality
+// FIXED: Audio streaming functionality with proper Web Audio Context initialization
 const audioStream = {
   active: false,
   context: null,
   sampleRate: 8000, // Ensure this matches ESP32's sample rate
+  
+  async initializeContext() {
+    if (!this.context) {
+      try {
+        this.context = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: this.sampleRate
+        });
+        
+        // Resume context if it's suspended (browser autoplay policy)
+        if (this.context.state === 'suspended') {
+          await this.context.resume();
+        }
+        
+        console.log(`[Audio] Context initialized - Sample Rate: ${this.context.sampleRate}Hz`);
+      } catch (error) {
+        console.error('[Audio] Failed to initialize context:', error);
+        appendMessage('System', 'Failed to initialize audio context');
+      }
+    }
+  },
   
   start: function() {
     if (!this.active) {
@@ -438,7 +473,8 @@ const audioStream = {
 
   processChunk: function(audioData) {
     if (!this.active || !this.context) {
-      console.log("[Audio] Received data but no context - queuing or ignoring");
+      console.log("[Audio] Received data but no context - initializing...");
+      this.initializeContext();
       return;
     }
 
@@ -465,8 +501,18 @@ const audioStream = {
   }
 };
 
-// Console interface
-window.start_audio = () => audioStream.start();
+// Enhanced console interface with user permission handling
+window.start_audio = async () => {
+  try {
+    // Request user permission for audio
+    await audioStream.initializeContext();
+    audioStream.start();
+  } catch (error) {
+    console.error('Failed to start audio:', error);
+    appendMessage('System', 'Failed to start audio - check browser permissions');
+  }
+};
+
 window.stop_audio = () => audioStream.stop();
 
 console.log("------------------------------------------");
