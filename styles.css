@@ -660,3 +660,36 @@ body {
     min-width: 40px;
     text-align: right;
 }
+.distance-overlay {
+    position: absolute;
+    top: 1rem;
+    right: 58rem;
+    background-color: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-family: 'Montserrat', sans-serif;
+    min-width: 150px;
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.distance-title {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.8);
+    margin-bottom: 0.25rem;
+}
+
+.distance-value {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: #fff;
+}
+
+/* Adjust recording indicator position to not overlap */
+.recording-indicator {
+    right: 1rem;
+    top: 1rem;
+    left: auto;
+}

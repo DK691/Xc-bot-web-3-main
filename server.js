@@ -87,11 +87,10 @@ wss.on('connection', (socket, req) => {
         data = JSON.parse(message.toString());
         console.log(`📨 Received from client ${clientIP}:`, data);
         
-        // FIXED: Correct audio control logic
+        // Handle audio control
         if (data.cmd === 'start_audio') {
           audioStreamActive = true;
           console.log(`🎤 Audio streaming enabled for ${clientIP}`);
-          // Send confirmation with proper type
           socket.send(JSON.stringify({ 
             type: 'audio_control',
             status: 'audio_started',
@@ -107,7 +106,24 @@ wss.on('connection', (socket, req) => {
           }));
         }
 
-        // Broadcast JSON messages to other clients (including ESP32)
+        // Handle distance sensor data from ESP32 (this is where real sensor data comes in)
+        if (data.sensor === 'ultrasonic' && typeof data.distance === 'number') {
+          console.log(`📏 Distance sensor: ${data.distance} cm`);
+          // Broadcast distance to all web clients only (not back to ESP32)
+          wss.clients.forEach(client => {
+            if (client !== socket && client.readyState === WebSocket.OPEN) {
+              // Check if this is a web client (not ESP32) by checking if they've sent web-specific commands
+              client.send(JSON.stringify({ 
+                type: 'distance_update',
+                distance: data.distance,
+                timestamp: Date.now()
+              }));
+            }
+          });
+          return; // Don't broadcast raw sensor data
+        }
+
+        // Broadcast other JSON messages to other clients (including ESP32)
         wss.clients.forEach(client => {
           if (client !== socket && client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify(data));
@@ -212,6 +228,9 @@ app.get('/camera-status', async (req, res) => {
   }
 });
 
+// REMOVED: The random distance simulation that was causing the issue
+// The server will now only handle real sensor data from ESP32
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🌐 Server running at http://localhost:${PORT}`);
@@ -219,4 +238,5 @@ server.listen(PORT, () => {
   console.log(`📷 MJPEG proxy available at http://localhost:${PORT}/video/`);
   console.log(`🔧 Update ESP32_CAM_IP in server.js to match your ESP32-CAM's IP address`);
   console.log(`📡 Current ESP32-CAM IP: ${ESP32_CAM_IP}`);
+  console.log(`📏 Ready to receive ultrasonic sensor data from ESP32`);
 });

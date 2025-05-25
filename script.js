@@ -1,3 +1,4 @@
+
 // Connect to WebSocket server running on local machine
 const ws = new WebSocket("ws://localhost:3000");
 
@@ -19,6 +20,33 @@ const pressedKeys = new Set();
 // Track current global speed
 let currentGlobalSpeed = 50; // Default speed matching slider
 let lastSentSpeed = 50; // Track the last speed actually sent to prevent duplicates
+
+// Function to convert percentage to actual speed value (0-100% = 0-300)
+function percentageToSpeed(percentage) {
+    return Math.round((percentage / 100) * 300);
+}
+
+// Function to convert actual speed value back to percentage (0-300 = 0-100%)
+function speedToPercentage(speed) {
+    return Math.round((speed / 300) * 100);
+}
+
+// Function to update the distance display
+function updateDistance(distance) {
+    const distanceElement = document.getElementById('distance-value');
+    if (distanceElement) {
+        distanceElement.textContent = `${distance} cm`;
+        
+        // Change color based on proximity
+        if (distance < 20) {
+            distanceElement.style.color = '#ef4444'; // Red (danger)
+        } else if (distance < 50) {
+            distanceElement.style.color = '#f59e0b'; // Yellow (warning)
+        } else {
+            distanceElement.style.color = '#10b981'; // Green (safe)
+        }
+    }
+}
 
 // On open
 ws.addEventListener('open', () => {
@@ -56,6 +84,10 @@ ws.addEventListener('message', (event) => {
                 handleAudioControl(data);
             } else if (data.type === 'audio_metadata') {
                 handleAudioMetadata(data);
+            } else if (data.type === 'distance_update') {
+                // Handle distance sensor updates - update overlay only, don't show in console
+                updateDistance(data.distance);
+                console.log(`📏 Distance sensor: ${data.distance} cm`);
             } else {
                 handleRobotMessage(data);
             }
@@ -119,8 +151,8 @@ function sendCommand(command, value = null) {
         payload.cmd = "motor";
         // ESP32 expects 'backward' instead of 'reverse'
         payload.action = (command === 'reverse') ? 'backward' : command;
-        // Always include current speed for convenience/visibility in JSON
-        payload.speed = currentGlobalSpeed;
+        // Always include current speed for convenience/visibility in JSON - convert to 0-300 range
+        payload.speed = percentageToSpeed(currentGlobalSpeed);
     } else if (['pan', 'tilt'].includes(command)) {
         payload.cmd = "servo";
         payload.axis = command;
@@ -129,7 +161,9 @@ function sendCommand(command, value = null) {
         // Handle explicit speed commands
         payload.cmd = command;
         if (value !== null) {
-            payload.value = value;
+            // Convert percentage to 0-300 range for JSON
+            const actualSpeed = percentageToSpeed(value);
+            payload.value = actualSpeed;
             lastSentSpeed = value;
             currentGlobalSpeed = value;
         }
@@ -167,9 +201,11 @@ function sendSpeedCommand(speed) {
     
     // Only send if speed actually changed
     if (speed !== lastSentSpeed) {
+        // Convert percentage to 0-300 range for JSON
+        const actualSpeed = percentageToSpeed(speed);
         const payload = {
             cmd: "speed",
-            value: speed
+            value: actualSpeed
         };
         
         ws.send(JSON.stringify(payload));
@@ -500,7 +536,6 @@ const audioStream = {
     }
   }
 };
-
 // Enhanced console interface with user permission handling
 window.start_audio = async () => {
   try {
